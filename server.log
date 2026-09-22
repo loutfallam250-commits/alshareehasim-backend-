@@ -1,0 +1,4 @@
+[dotenv@17.3.1] injecting env (7) from .env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+⚠️  Sentry DSN not configured - error tracking disabled
+Server running on port 5000
+MongoDB connected
