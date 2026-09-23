@@ -27,7 +27,7 @@ exports.invalidateCache = () => cache.clear();
 // ─── Whitelist for mass-assignment protection ─────────────────────────────────
 const ALLOWED_PRODUCT_FIELDS = new Set([
   "name", "brief", "originalPrice", "salePrice", "description",
-  "image", "images", "network", "simType", "dataSpeed", "storage",
+  "image", "images",
   "specifications", "freeDelivery", "deliveryTime", "warrantyYears",
   "installment", "taxIncluded", "category", "subCategory", "brand",
   "inStock", "isFeatured", "sortOrder", "color", "screenSize",
