@@ -18,6 +18,7 @@ const checkoutSchema = new mongoose.Schema(
     total: { type: Number, required: true },
     downPayment: { type: Number, default: 0 },
     customer: { type: String },
+    userId: { type: String },
     whatsapp: { type: String },
     nationalId: { type: String },
     address: { type: String },
