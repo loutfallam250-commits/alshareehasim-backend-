@@ -55,9 +55,10 @@ const COMPANY_TEXT_FIELDS = [
   "phone", "whatsapp", "website", "email",
   "currencyAr", "currencyEn", "taxNumber",
   "shippingCompany", "paymentMethod", "details",
-  "qrLink", "qrLinkType", "qrFile",
-  "link1", "link1Type", "file1",
-  "link2", "link2Type", "file2",
+  "qrLink", "qrLinkType", "qrFile", "qrImage",
+  "link1", "link1Type", "file1", "img1",
+  "link2", "link2Type", "file2", "img2",
+  "footerItems"
 ];
 
 const ALLOWED_PAYMENT_METHODS = ["حوالات بنكية فقط", "بطاقة بنكية فقط"];
@@ -283,7 +284,7 @@ router.post("/company/upload/:field", authMiddleware, uploadLimiter, upload.sing
 router.delete("/company/image/:field", authMiddleware, writeLimiter, async (req, res) => {
   try {
     const { field } = req.params;
-    const allowed = ["logo", "header", "footer", "stamp", "cancelStamp"];
+    const allowed = ["logo", "header", "footer", "stamp", "cancelStamp", "img1", "img2", "qrImage"];
     if (!allowed.includes(field)) return res.status(400).json({ error: "حقل غير مسموح" });
     const company = await Company.findOne();
     if (!company) return res.json({ success: true });
