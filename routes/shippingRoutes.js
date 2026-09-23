@@ -1,20 +1,13 @@
 const express = require("express");
-const jwt = require("jsonwebtoken");
 const router = express.Router();
 const ShippingCompany = require("../models/ShippingCompany");
 const ShippingCoverage = require("../models/ShippingCoverage");
 const SAUDI_REGIONS = require("../config/saudiRegions");
-const { getShippingOptions } = require("../services/shippingService");
+const { getShippingOptions, invalidateShippingCache } = require("../services/shippingService");
 const { makeImageUpload, uploadToCloudinary, deleteFromCloudinary } = require("../config/cloudinary");
+const { adminAuth: auth } = require("../middleware/auth");
 
 const uploadLogo = makeImageUpload();
-
-function auth(req, res, next) {
-  const token = req.cookies?.admin_token;
-  if (!token) return res.status(401).json({ error: "غير مصرح" });
-  try { req.admin = jwt.verify(token, process.env.JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: "غير مصرح" }); }
-}
 
 // ── Public ──────────────────────────────────────────────
 
@@ -60,6 +53,7 @@ router.post("/companies", auth, uploadLogo.single("logo"), async (req, res) => {
       logo = r.secure_url;
     }
     const company = await ShippingCompany.create({ name: name.trim(), logo });
+    invalidateShippingCache();
     res.status(201).json(company);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -77,6 +71,7 @@ router.patch("/companies/:id", auth, uploadLogo.single("logo"), async (req, res)
       company.logo = r.secure_url;
     }
     await company.save();
+    invalidateShippingCache();
     res.json(company);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -88,6 +83,7 @@ router.delete("/companies/:id", auth, async (req, res) => {
     if (!company) return res.status(404).json({ error: "الشركة غير موجودة" });
     await deleteFromCloudinary(company.logo);
     await ShippingCoverage.deleteMany({ company: req.params.id });
+    invalidateShippingCache();
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -124,6 +120,7 @@ router.post("/coverage", auth, async (req, res) => {
       deliveryMaxDays: Number(deliveryMaxDays),
     });
     await coverage.populate("company", "name logo");
+    invalidateShippingCache();
     res.status(201).json(coverage);
   } catch (err) {
     if (err.code === 11000) return res.status(400).json({ error: "هذه الشركة لديها تغطية لهذه المنطقة بالفعل" });
@@ -145,6 +142,7 @@ router.patch("/coverage/:id", auth, async (req, res) => {
 
     const coverage = await ShippingCoverage.findByIdAndUpdate(req.params.id, update, { new: true }).populate("company", "name logo");
     if (!coverage) return res.status(404).json({ error: "التغطية غير موجودة" });
+    invalidateShippingCache();
     res.json(coverage);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -166,6 +164,7 @@ router.delete("/coverage/:id", auth, async (req, res) => {
     }
 
     await ShippingCoverage.findByIdAndDelete(req.params.id);
+    invalidateShippingCache();
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

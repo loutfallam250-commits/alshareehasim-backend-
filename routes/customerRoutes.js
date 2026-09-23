@@ -36,12 +36,22 @@ function generateOtp() {
   return String(crypto.randomInt(100000, 999999));
 }
 
-async function hashOtp(otp) {
-  return bcrypt.hash(otp, 10);
+// OTP hashing: HMAC-SHA256 is correct for short-lived tokens.
+// bcrypt is unnecessarily slow for 6-digit OTPs (adds ~100ms/call to auth flow).
+function hashOtp(otp) {
+  return crypto
+    .createHmac("sha256", process.env.OTP_HASH_SECRET)
+    .update(String(otp))
+    .digest("hex");
 }
 
-async function verifyOtp(plain, hash) {
-  return bcrypt.compare(plain, hash);
+function verifyOtp(plain, hash) {
+  const expected = hashOtp(String(plain).trim());
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(hash, "hex"));
+  } catch {
+    return false; // mismatched buffer lengths
+  }
 }
 
 function issueToken(customerId) {
@@ -124,7 +134,7 @@ router.post("/auth/register/request", otpLimiter, async (req, res) => {
     // and on verify we create the actual account.
 
     const otp = generateOtp();
-    const otpHash = await hashOtp(otp);
+    const otpHash = hashOtp(otp);  // sync HMAC — no await needed
     const expiresAt = new Date(Date.now() + OTP_TTL_MS);
 
     // Store pending OTP keyed by email in a temporary Customer doc with verified=false.
@@ -187,7 +197,7 @@ router.post("/auth/register/verify", authLimiter, async (req, res) => {
       return res.status(400).json({ error: "انتهت صلاحية رمز التحقق", code: "EXPIRED" });
     }
 
-    const match = await verifyOtp(String(otp).trim(), hash);
+    const match = verifyOtp(String(otp).trim(), hash);
     if (!match) {
       const newAttempts = (attempts || 0) + 1;
       const update = { "pendingOtp.attempts": newAttempts };
@@ -247,7 +257,7 @@ router.post("/auth/request", otpLimiter, async (req, res) => {
     }
 
     const otp = generateOtp();
-    const otpHash = await hashOtp(otp);
+    const otpHash = hashOtp(otp);
 
     customer.pendingOtp = {
       hash: otpHash,
@@ -283,7 +293,7 @@ router.post("/auth/verify", authLimiter, async (req, res) => {
       return res.status(400).json({ error: "انتهت صلاحية رمز التحقق", code: "EXPIRED" });
     }
 
-    const match = await verifyOtp(String(otp).trim(), hash);
+    const match = verifyOtp(String(otp).trim(), hash);
     if (!match) {
       const newAttempts = (attempts || 0) + 1;
       const update = { "pendingOtp.attempts": newAttempts };
@@ -413,7 +423,7 @@ router.post("/auth/forgot/request", otpLimiter, async (req, res) => {
     }
 
     const otp = generateOtp();
-    const otpHash = await hashOtp(otp);
+    const otpHash = hashOtp(otp);
 
     customer.pendingOtp = {
       hash: otpHash,
@@ -453,7 +463,7 @@ router.post("/auth/forgot/verify", authLimiter, async (req, res) => {
       return res.status(400).json({ error: "انتهت صلاحية رمز التحقق", code: "EXPIRED" });
     }
 
-    const match = await verifyOtp(String(otp).trim(), hash);
+    const match = verifyOtp(String(otp).trim(), hash);
     if (!match) {
       const newAttempts = (attempts || 0) + 1;
       const update = { "pendingOtp.attempts": newAttempts };

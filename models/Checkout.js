@@ -58,4 +58,10 @@ const checkoutSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes — speeds up sort, rate-limit checks, and status filtering
+checkoutSchema.index({ createdAt: -1 });
+checkoutSchema.index({ whatsapp: 1 });
+checkoutSchema.index({ nationalId: 1 });
+checkoutSchema.index({ status: 1 });
+
 module.exports = mongoose.model("Checkout", checkoutSchema);

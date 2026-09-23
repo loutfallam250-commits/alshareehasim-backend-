@@ -33,4 +33,9 @@ customerSchema.methods.comparePassword = async function (plain) {
   return bcrypt.compare(plain, this.password);
 };
 
+// Compound index — speeds up all auth queries that filter by email + verified
+customerSchema.index({ email: 1, verified: 1 });
+// TTL index — auto-delete unverified accounts after 24 hours (cleanup orphans)
+customerSchema.index({ "pendingOtp.expiresAt": 1 }, { expireAfterSeconds: 86400, partialFilterExpression: { verified: false } });
+
 module.exports = mongoose.model("Customer", customerSchema);

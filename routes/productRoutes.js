@@ -1,10 +1,25 @@
 const express = require("express");
 const router = express.Router();
-const { getProducts, getProduct, getFeaturedProducts, getProductsByIds, createProduct, updateProduct, deleteProduct } = require("../controllers/productController");
+const { adminAuth } = require("../middleware/auth");
+const {
+  getProducts,
+  getProduct,
+  getFeaturedProducts,
+  getProductsByIds,
+  createProduct,
+  updateProduct,
+  deleteProduct,
+} = require("../controllers/productController");
 
-router.route("/").get(getProducts).post(createProduct);
+// Public reads
+router.get("/", getProducts);
 router.get("/featured", getFeaturedProducts);
 router.get("/by-ids", getProductsByIds);
-router.route("/:id").get(getProduct).put(updateProduct).delete(deleteProduct);
+router.get("/:id", getProduct);
+
+// Admin-only writes
+router.post("/", adminAuth, createProduct);
+router.put("/:id", adminAuth, updateProduct);
+router.delete("/:id", adminAuth, deleteProduct);
 
 module.exports = router;

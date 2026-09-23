@@ -9,12 +9,14 @@ const SubCategorySettings = require("../models/SubCategorySettings");
 const SubCategory = require("../models/SubCategory");
 const Review = require("../models/Review");
 const Checkout = require("../models/Checkout");
-const Bank = require("../models/Bank");
+
 const CardFieldSettings = require("../models/CardFieldSettings");
 const { makeImageUpload, makeFileUpload, uploadToCloudinary, deleteFromCloudinary } = require("../config/cloudinary");
+// Shared auth — alias keeps all existing authMiddleware call sites unchanged
+const { adminAuth: authMiddleware } = require("../middleware/auth");
 
 const upload = makeImageUpload();
-const uploadBankLogo = makeImageUpload();
+
 const uploadFooterImg = makeImageUpload();
 const uploadDoc = makeFileUpload();
 const uploadProductImage = makeImageUpload();
@@ -95,18 +97,9 @@ function validateCompanyBody(body) {
   return errors;
 }
 
-function authMiddleware(req, res, next) {
-  const token = req.cookies?.admin_token;
-  if (!token) return res.status(401).json({ error: "غير مصرح" });
-  try {
-    req.admin = jwt.verify(token, process.env.JWT_SECRET);
-    next();
-  } catch {
-    res.status(401).json({ error: "غير مصرح" });
-  }
-}
 
 // POST /api/admin/login
+
 router.post("/login", loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -118,9 +111,27 @@ router.post("/login", loginLimiter, async (req, res) => {
     if (!admin)
       return res.status(401).json({ error: "بيانات غير صحيحة" });
 
-    // TODO: re-enable loginAttempts & lockUntil in production
+    // Check account lock
+    if (admin.isLocked()) {
+      return res.status(423).json({ error: "الحساب مقفل مؤقتاً بسبب كثرة المحاولات، حاول بعد 30 دقيقة" });
+    }
+
     const match = await admin.comparePassword(password);
-    if (!match) return res.status(401).json({ error: "بيانات غير صحيحة" });
+    if (!match) {
+      admin.loginAttempts = (admin.loginAttempts || 0) + 1;
+      if (admin.loginAttempts >= 5) {
+        admin.lockUntil = new Date(Date.now() + 30 * 60 * 1000); // lock 30 min
+        admin.loginAttempts = 0;
+      }
+      await admin.save();
+      return res.status(401).json({ error: "بيانات غير صحيحة" });
+    }
+
+    // Reset on successful login
+    admin.loginAttempts = 0;
+    admin.lockUntil = undefined;
+    await admin.save();
+
 
     const token = jwt.sign(
       { id: admin._id, email: admin.email },
@@ -649,7 +660,7 @@ router.get("/sub-categories/public", async (req, res) => {
 });
 
 // GET /api/admin/sub-categories/home-settings (public)
-router.get("/sub-categories/home-settings", writeLimiter, async (req, res) => {
+router.get("/sub-categories/home-settings", async (req, res) => {
   try {
     const settings = await SubCategorySettings.find({ category: { $ne: "__config__" } }).sort({ order: 1 });
     res.json(settings);
@@ -659,7 +670,7 @@ router.get("/sub-categories/home-settings", writeLimiter, async (req, res) => {
 });
 
 // GET /api/admin/sub-categories/max (public)
-router.get("/sub-categories/max", writeLimiter, async (req, res) => {
+router.get("/sub-categories/max", async (req, res) => {
   try {
     const doc = await SubCategorySettings.findOne({ category: "__config__", subCategory: "__max__" });
     res.json({ max: doc ? doc.order : 4 });
@@ -667,6 +678,7 @@ router.get("/sub-categories/max", writeLimiter, async (req, res) => {
     res.status(500).json({ error: "خطأ في الخادم" });
   }
 });
+
 
 // PATCH /api/admin/sub-categories/max
 router.patch("/sub-categories/max", authMiddleware, async (req, res) => {
@@ -700,7 +712,7 @@ router.get("/brands", authMiddleware, async (req, res) => {
 });
 
 // GET /api/admin/brands/home-settings (public)
-router.get("/brands/home-settings", writeLimiter, async (req, res) => {
+router.get("/brands/home-settings", async (req, res) => {
   try {
     const settings = await SubCategorySettings.find({ category: "__brand__" }).sort({ order: 1 });
     res.json(settings.map((s) => ({ brand: s.subCategory, showInHome: s.showInHome, order: s.order, bannerImages: s.bannerImages || [] })));
@@ -793,7 +805,7 @@ router.patch("/brands/settings/order", authMiddleware, async (req, res) => {
 });
 
 // GET /api/admin/brands/max (public)
-router.get("/brands/max", writeLimiter, async (req, res) => {
+router.get("/brands/max", async (req, res) => {
   try {
     const doc = await SubCategorySettings.findOne({ category: "__brand_config__", subCategory: "__max__" });
     res.json({ max: doc ? doc.order : 4 });
@@ -829,61 +841,38 @@ router.get("/orders/count", async (req, res) => {
   }
 });
 
-// GET /api/admin/orders
-router.get("/orders", authMiddleware, async (req, res) => {
-  try {
-    const orders = await Checkout.find().sort({ createdAt: -1 });
-    res.json(orders);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: "خطأ في الخادم" });
-  }
-});
-
-// DELETE /api/admin/orders/:id
-router.delete("/orders/:id", authMiddleware, async (req, res) => {
-  try {
-    const order = await Checkout.findByIdAndDelete(req.params.id);
-    if (!order) return res.status(404).json({ ok: false, error: "not found" });
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// PUT /api/admin/orders/:id/status
-router.put("/orders/:id/status", authMiddleware, async (req, res) => {
-  try {
-    const order = await Checkout.findByIdAndUpdate(
-      req.params.id,
-      { status: req.body.status },
-      { new: true }
-    );
-    if (!order) return res.status(404).json({ ok: false, error: "not found" });
-    res.json(order);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// GET /api/admin/reviews (public - approved only)
+// GET /api/admin/reviews (public - approved only, paginated)
 router.get("/reviews", async (req, res) => {
   try {
-    const reviews = await Review.find({ approved: true }).sort({ createdAt: -1 });
-    res.json(reviews);
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, parseInt(req.query.limit) || 50);
+    const skip = (page - 1) * limit;
+    const [reviews, total] = await Promise.all([
+      Review.find({ approved: true }).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Review.countDocuments({ approved: true }),
+    ]);
+    res.json({ reviews, total, page, pages: Math.ceil(total / limit) });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
   }
 });
 
-// GET /api/admin/reviews/all (admin - all reviews)
+// GET /api/admin/reviews/all (admin - all reviews, paginated)
 router.get("/reviews/all", authMiddleware, async (req, res) => {
   try {
-    const reviews = await Review.find().sort({ createdAt: -1 });
-    res.json(reviews);
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(200, parseInt(req.query.limit) || 100);
+    const skip = (page - 1) * limit;
+    const [reviews, total] = await Promise.all([
+      Review.find().sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Review.countDocuments(),
+    ]);
+    res.json({ reviews, total, page, pages: Math.ceil(total / limit) });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
   }
 });
+
 
 // POST /api/admin/reviews (public - submit review)
 router.post("/reviews", async (req, res) => {
@@ -1014,18 +1003,19 @@ router.post("/products", authMiddleware, uploadProductFields.fields([{ name: "im
       productData.image = body.imageUrl;
     }
 
-    // Gallery images: URLs + uploaded files
+    // Gallery images: URLs + uploaded files (parallel upload — fixes sequential loop)
     const galleryUrls = [];
     if (body.galleryUrls) {
       try { galleryUrls.push(...JSON.parse(body.galleryUrls)); } catch { /* ignore */ }
     }
-    if (req.files?.galleryFiles) {
-      for (const file of req.files.galleryFiles) {
-        const result = await uploadToCloudinary(file.buffer, "products");
-        galleryUrls.push(result.secure_url);
-      }
+    if (req.files?.galleryFiles && req.files.galleryFiles.length > 0) {
+      const uploadResults = await Promise.all(
+        req.files.galleryFiles.map((file) => uploadToCloudinary(file.buffer, "products"))
+      );
+      galleryUrls.push(...uploadResults.map((r) => r.secure_url));
     }
     if (galleryUrls.length) productData.images = galleryUrls;
+
 
     const product = await Product.create(productData);
     res.status(201).json(product);
@@ -1115,20 +1105,21 @@ router.put("/products/:id", authMiddleware, uploadProductFieldsEdit.fields([{ na
       product.image = body.imageUrl;
     }
 
-    // Gallery images: URLs + uploaded files (multipart form)
+    // Gallery images: URLs + uploaded files (parallel upload — fixes sequential loop)
     const galleryUrls = [];
     if (body.galleryUrls) {
       try { galleryUrls.push(...JSON.parse(body.galleryUrls)); } catch { /* ignore */ }
     }
-    if (req.files?.galleryFiles) {
-      for (const file of req.files.galleryFiles) {
-        const result = await uploadToCloudinary(file.buffer, "products");
-        galleryUrls.push(result.secure_url);
-      }
+    if (req.files?.galleryFiles && req.files.galleryFiles.length > 0) {
+      const uploadResults = await Promise.all(
+        req.files.galleryFiles.map((file) => uploadToCloudinary(file.buffer, "products"))
+      );
+      galleryUrls.push(...uploadResults.map((r) => r.secure_url));
     }
     if (body.galleryUrls !== undefined || req.files?.galleryFiles) {
       product.images = galleryUrls;
     }
+
 
     // Direct images array from JSON body (edit page)
     if (body.images !== undefined && !req.files?.galleryFiles && body.galleryUrls === undefined) {
@@ -1379,64 +1370,6 @@ router.delete("/company/footer-items/:index", authMiddleware, async (req, res) =
   }
 });
 
-// GET /api/admin/banks
-router.get("/banks", authMiddleware, async (req, res) => {
-  try {
-    const banks = await Bank.find().sort({ createdAt: -1 });
-    res.json(banks);
-  } catch {
-    res.status(500).json({ error: "خطأ في الخادم" });
-  }
-});
-
-// POST /api/admin/banks
-router.post("/banks", authMiddleware, uploadBankLogo.single("logo"), async (req, res) => {
-  try {
-    const { name, iban } = req.body;
-    if (!name || !iban) return res.status(400).json({ error: "اسم البنك والآيبان مطلوبان" });
-    let logo = "";
-    if (req.file) {
-      const result = await uploadToCloudinary(req.file.buffer, "banks");
-      logo = result.secure_url;
-    }
-    const bank = await Bank.create({ name, iban, logo });
-    res.status(201).json(bank);
-  } catch {
-    res.status(500).json({ error: "خطأ في الخادم" });
-  }
-});
-
-// PUT /api/admin/banks/:id
-router.put("/banks/:id", authMiddleware, uploadBankLogo.single("logo"), async (req, res) => {
-  try {
-    const bank = await Bank.findById(req.params.id);
-    if (!bank) return res.status(404).json({ error: "البنك غير موجود" });
-    const { name, iban } = req.body;
-    if (name) bank.name = name;
-    if (iban) bank.iban = iban;
-    if (req.file) {
-      await deleteFromCloudinary(bank.logo);
-      const result = await uploadToCloudinary(req.file.buffer, "banks");
-      bank.logo = result.secure_url;
-    }
-    await bank.save();
-    res.json(bank);
-  } catch {
-    res.status(500).json({ error: "خطأ في الخادم" });
-  }
-});
-
-// DELETE /api/admin/banks/:id
-router.delete("/banks/:id", authMiddleware, async (req, res) => {
-  try {
-    const bank = await Bank.findByIdAndDelete(req.params.id);
-    if (!bank) return res.status(404).json({ error: "البنك غير موجود" });
-    await deleteFromCloudinary(bank.logo);
-    res.json({ success: true });
-  } catch {
-    res.status(500).json({ error: "خطأ في الخادم" });
-  }
-});
 
 // GET /api/admin/card-field-settings
 router.get("/card-field-settings", async (req, res) => {
@@ -1465,31 +1398,6 @@ router.patch("/card-field-settings", authMiddleware, async (req, res) => {
     res.json({ [field]: doc[field] });
   } catch (err) {
     console.error("[card-field-settings PATCH error]", err);
-    res.status(500).json({ error: "خطأ في الخادم" });
-  }
-});
-
-// GET /api/admin/maintenance
-router.get("/maintenance", authMiddleware, async (req, res) => {
-  try {
-    const company = await Company.findOne();
-    res.json({ maintenance: company?.maintenanceMode ?? false });
-  } catch {
-    res.status(500).json({ error: "خطأ في الخادم" });
-  }
-});
-
-// POST /api/admin/maintenance
-router.post("/maintenance", authMiddleware, async (req, res) => {
-  try {
-    const { enabled } = req.body;
-    if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled مطلوب" });
-    let company = await Company.findOne();
-    if (!company) company = await Company.create({});
-    company.maintenanceMode = enabled;
-    await company.save();
-    res.json({ success: true, maintenance: enabled });
-  } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
   }
 });

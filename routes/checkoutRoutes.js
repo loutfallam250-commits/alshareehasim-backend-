@@ -1,27 +1,27 @@
 const express = require("express");
-const jwt = require("jsonwebtoken");
-const rateLimit = require("express-rate-limit");
 const router = express.Router();
+const mongoose = require("mongoose");
 const Checkout = require("../models/Checkout");
 const Product = require("../models/Product");
 const { calculateShippingPrice } = require("../services/shippingService");
-
-function authMiddleware(req, res, next) {
-  const token = req.cookies?.admin_token;
-  if (!token) return res.status(401).json({ error: "غير مصرح" });
-  try {
-    req.admin = jwt.verify(token, process.env.JWT_SECRET);
-    next();
-  } catch {
-    res.status(401).json({ error: "غير مصرح" });
-  }
-}
+const { adminAuth } = require("../middleware/auth");
 
 const RATE_LIMIT_MAX = 4;
-const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 دقايق
+const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
-// Map: key -> { count, windowStart }
+// In-memory per-user rate limit (first line of defence — stateless)
 const userRateLimitMap = new Map();
+
+// Cleanup expired entries every 10 minutes to prevent memory leak
+const _rlCleanup = setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of userRateLimitMap.entries()) {
+    if (now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
+      userRateLimitMap.delete(key);
+    }
+  }
+}, 10 * 60 * 1000);
+if (_rlCleanup.unref) _rlCleanup.unref(); // don't keep process alive
 
 function userRateLimit(req, res, next) {
   const { whatsapp, nationalId } = req.body;
@@ -45,7 +45,6 @@ function userRateLimit(req, res, next) {
       }
       entry.count++;
     } else {
-      // نافذة جديدة
       userRateLimitMap.set(key, { count: 1, windowStart: now });
     }
   } else {
@@ -55,118 +54,93 @@ function userRateLimit(req, res, next) {
   next();
 }
 
-// Validate cart endpoint
+// ─── Shared cart validation helper — SINGLE DB QUERY (fixes N+1) ─────────────
+async function validateCartItems(items) {
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    return { error: "السلة فارغة" };
+  }
+
+  // Validate IDs before hitting DB
+  const productIds = items.map((i) => i.productId);
+  const invalidId = productIds.find((id) => !mongoose.Types.ObjectId.isValid(id));
+  if (invalidId) {
+    return { error: `معرف المنتج غير صحيح: ${invalidId}` };
+  }
+
+  // ONE query for all products instead of N queries (N+1 fix)
+  const products = await Product.find({ _id: { $in: productIds } }).lean();
+  const productMap = new Map(products.map((p) => [String(p._id), p]));
+
+  let calculatedTotal = 0;
+  const validatedItems = [];
+
+  for (const item of items) {
+    const product = productMap.get(String(item.productId));
+    if (!product) {
+      return { error: `المنتج ${item.productId} غير موجود` };
+    }
+    if (!product.inStock) {
+      return { error: `المنتج "${product.name}" غير متوفر حالياً` };
+    }
+    const actualPrice = product.salePrice ?? product.originalPrice;
+    const itemTotal = actualPrice * (item.quantity || 1);
+    calculatedTotal += itemTotal;
+    validatedItems.push({
+      productId: product._id,
+      name: product.name,
+      price: actualPrice,
+      quantity: item.quantity,
+      total: itemTotal,      // only used internally — stripped before saving to DB
+    });
+  }
+
+  return { validatedItems, calculatedTotal };
+}
+
+// ─── POST /api/checkout/validate-cart ────────────────────────────────────────
 router.post("/validate-cart", async (req, res) => {
   try {
-    const { items } = req.body;
-    
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ ok: false, error: "السلة فارغة" });
-    }
-    
-    let calculatedTotal = 0;
-    const validatedItems = [];
-    
-    for (const item of items) {
-      const product = await Product.findById(item.productId);
-      
-      if (!product) {
-        return res.status(400).json({ 
-          ok: false, 
-          error: `المنتج ${item.productId} غير موجود` 
-        });
-      }
-      
-      if (!product.inStock) {
-        return res.status(400).json({ 
-          ok: false, 
-          error: `المنتج "${product.name}" غير متوفر حالياً` 
-        });
-      }
-      
-      const actualPrice = product.salePrice ?? product.originalPrice;
-      const itemTotal = actualPrice * item.quantity;
-      calculatedTotal += itemTotal;
-      
-      validatedItems.push({
-        productId: product._id,
-        name: product.name,
-        price: actualPrice,
-        quantity: item.quantity,
-        total: itemTotal
-      });
-    }
-    
-    res.json({ 
-      ok: true, 
-      items: validatedItems, 
-      total: calculatedTotal 
-    });
+    const result = await validateCartItems(req.body.items);
+    if (result.error) return res.status(400).json({ ok: false, error: result.error });
+    res.json({ ok: true, items: result.validatedItems, total: result.calculatedTotal });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
+// ─── POST /api/checkout/ ──────────────────────────────────────────────────────
 router.post("/", userRateLimit, async (req, res) => {
   try {
     const { whatsapp, nationalId, shipping: shippingInput, items, total } = req.body;
-    
-    // Validate cart on server-side
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ ok: false, error: "السلة فارغة" });
+
+    // Validate & price all items in a single DB query
+    const cartResult = await validateCartItems(items);
+    if (cartResult.error) {
+      return res.status(400).json({ ok: false, error: cartResult.error });
     }
-    
-    let calculatedTotal = 0;
-    const validatedItems = [];
-    
-    for (const item of items) {
-      const product = await Product.findById(item.productId);
-      
-      if (!product) {
-        return res.status(400).json({ 
-          ok: false, 
-          error: `المنتج ${item.productId} غير موجود` 
+    const { validatedItems, calculatedTotal } = cartResult;
+
+    // Verify each submitted price against DB price (in same order)
+    for (let i = 0; i < validatedItems.length; i++) {
+      const submitted = items[i];
+      const validated = validatedItems[i];
+      if (Number(submitted.price) !== validated.price) {
+        return res.status(400).json({
+          ok: false,
+          error: `سعر المنتج "${validated.name}" تم تعديله. يرجى تحديث السلة`,
         });
       }
-      
-      if (!product.inStock) {
-        return res.status(400).json({ 
-          ok: false, 
-          error: `المنتج "${product.name}" غير متوفر حالياً` 
-        });
-      }
-      
-      const actualPrice = product.salePrice ?? product.originalPrice;
-      
-      // Verify client-side price matches server-side price
-      if (Number(item.price) !== actualPrice) {
-        return res.status(400).json({ 
-          ok: false, 
-          error: `سعر المنتج "${product.name}" تم تعديله. يرجى تحديث السلة` 
-        });
-      }
-      
-      const itemTotal = actualPrice * item.quantity;
-      calculatedTotal += itemTotal;
-      
-      validatedItems.push({
-        productId: product._id,
-        name: product.name,
-        price: actualPrice,
-        quantity: item.quantity
+    }
+
+    // Verify total
+    if (Math.abs(calculatedTotal - total) > 0.01) {
+      return res.status(400).json({
+        ok: false,
+        error: `المجموع الإجمالي غير صحيح. المتوقع: ${calculatedTotal} ر.س، المرسل: ${total} ر.س`,
       });
     }
-    
-    // Verify total price
-    const priceDifference = Math.abs(calculatedTotal - total);
-    if (priceDifference > 0.01) {
-      return res.status(400).json({ 
-        ok: false, 
-        error: `المجموع الإجمالي غير صحيح. المتوقع: ${calculatedTotal} ر.س، المرسل: ${total} ر.س` 
-      });
-    }
-    
-    // DB-level check (double protection in production)
+
+    // DB-level rate limit (stateless fallback — survives restarts)
     if (whatsapp || nationalId) {
       const since = new Date(Date.now() - RATE_LIMIT_WINDOW_MS);
       const filter = { createdAt: { $gte: since } };
@@ -183,16 +157,16 @@ router.post("/", userRateLimit, async (req, res) => {
       }
     }
 
-    // Server-side shipping validation (only when companyId is a valid ObjectId)
+    // Server-side shipping validation
     let shippingSnapshot = null;
     const isValidObjectId = (id) => /^[a-f\d]{24}$/i.test(id);
+
     if (shippingInput?.companyId && shippingInput?.region && isValidObjectId(shippingInput.companyId)) {
-      const cartTotal = calculatedTotal;
       const verified = await calculateShippingPrice(
         shippingInput.companyId,
         shippingInput.region,
         shippingInput.city || "",
-        cartTotal
+        calculatedTotal
       );
       if (!verified) {
         return res.status(400).json({ ok: false, error: "شركة الشحن المختارة لا تغطي هذا العنوان" });
@@ -210,7 +184,7 @@ router.post("/", userRateLimit, async (req, res) => {
         city: shippingInput.city || "",
       };
     } else if (shippingInput?.companyId && shippingInput?.companyName) {
-      // Fallback: store shipping as-is when companyId is a slug (not ObjectId)
+      // Fallback for slug-based companyId (not ObjectId)
       shippingSnapshot = {
         companyId: shippingInput.companyId,
         companyName: shippingInput.companyName,
@@ -225,7 +199,12 @@ router.post("/", userRateLimit, async (req, res) => {
       };
     }
 
-    const payload = { ...req.body, items: validatedItems, total: calculatedTotal };
+    // Strip internal `total` field from items before saving
+    const dbItems = validatedItems.map(({ productId, name, price, quantity }) => ({
+      productId, name, price, quantity,
+    }));
+
+    const payload = { ...req.body, items: dbItems, total: calculatedTotal };
     if (shippingSnapshot) payload.shipping = shippingSnapshot;
 
     const checkout = new Checkout(payload);
@@ -236,17 +215,28 @@ router.post("/", userRateLimit, async (req, res) => {
   }
 });
 
-router.get("/", async (req, res) => {
+// ─── GET /api/checkout/ — admin only, paginated ───────────────────────────────
+router.get("/", adminAuth, async (req, res) => {
   try {
-    const orders = await Checkout.find().sort({ createdAt: -1 });
-    res.json(orders);
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, parseInt(req.query.limit) || 50);
+    const skip = (page - 1) * limit;
+    const [orders, total] = await Promise.all([
+      Checkout.find().sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Checkout.countDocuments(),
+    ]);
+    res.json({ orders, total, page, pages: Math.ceil(total / limit) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-router.get("/:id", async (req, res) => {
+// ─── GET /api/checkout/:id — admin only ──────────────────────────────────────
+router.get("/:id", adminAuth, async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ ok: false, error: "معرف غير صحيح" });
+    }
     const order = await Checkout.findById(req.params.id);
     if (!order) return res.status(404).json({ ok: false, error: "not found" });
     res.json(order);
@@ -255,8 +245,12 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-router.put("/:id/status", authMiddleware, async (req, res) => {
+// ─── PUT /api/checkout/:id/status — admin only ───────────────────────────────
+router.put("/:id/status", adminAuth, async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ ok: false, error: "معرف غير صحيح" });
+    }
     const order = await Checkout.findByIdAndUpdate(
       req.params.id,
       { status: req.body.status },
@@ -268,23 +262,33 @@ router.put("/:id/status", authMiddleware, async (req, res) => {
   }
 });
 
-// Public confirm after OTP — only allows "confirmed" status
+// ─── PUT /api/checkout/:id/confirm — public, OTP-confirmed orders only ────────
+// Security: only transitions pending → confirmed (prevents replay/manipulation)
 router.put("/:id/confirm", async (req, res) => {
   try {
-    const order = await Checkout.findByIdAndUpdate(
-      req.params.id,
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ ok: false, error: "معرف غير صحيح" });
+    }
+    const order = await Checkout.findOneAndUpdate(
+      { _id: req.params.id, status: "pending" },  // guard: only pending orders
       { status: "confirmed" },
       { new: true }
     );
-    if (!order) return res.status(404).json({ ok: false, error: "not found" });
+    if (!order) {
+      return res.status(404).json({ ok: false, error: "الطلب غير موجود أو لم يعد في وضع الانتظار" });
+    }
     res.json({ ok: true, orderId: order.orderId });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-router.put("/:id/financials", authMiddleware, async (req, res) => {
+// ─── PUT /api/checkout/:id/financials — admin only ───────────────────────────
+router.put("/:id/financials", adminAuth, async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ ok: false, error: "معرف غير صحيح" });
+    }
     const { total, downPayment, months, monthlyPayment } = req.body;
     const order = await Checkout.findByIdAndUpdate(
       req.params.id,
@@ -297,8 +301,12 @@ router.put("/:id/financials", authMiddleware, async (req, res) => {
   }
 });
 
-router.delete("/:id", authMiddleware, async (req, res) => {
+// ─── DELETE /api/checkout/:id — admin only ────────────────────────────────────
+router.delete("/:id", adminAuth, async (req, res) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ ok: false, error: "معرف غير صحيح" });
+    }
     const order = await Checkout.findByIdAndDelete(req.params.id);
     if (!order) return res.status(404).json({ ok: false, error: "not found" });
     res.json({ ok: true });

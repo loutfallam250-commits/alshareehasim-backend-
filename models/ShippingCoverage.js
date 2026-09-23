@@ -17,5 +17,7 @@ const coverageSchema = new mongoose.Schema(
 
 // Compound index: one company per region (can have multiple city subsets via cities array)
 coverageSchema.index({ company: 1, region: 1 }, { unique: true });
+// Index for checkout shipping options query — most frequent read
+coverageSchema.index({ region: 1, isActive: 1 });
 
 module.exports = mongoose.model("ShippingCoverage", coverageSchema);

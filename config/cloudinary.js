@@ -20,9 +20,18 @@ function makeFileUpload() {
 
 function uploadToCloudinary(buffer, folder, options = {}) {
   return new Promise((resolve, reject) => {
+    // 30-second timeout — prevents request hanging if Cloudinary is down
+    const timer = setTimeout(() => {
+      reject(new Error("Cloudinary upload timed out after 30s"));
+    }, 30000);
+
     const stream = cloudinary.uploader.upload_stream(
       { folder, ...options },
-      (err, result) => (err ? reject(err) : resolve(result))
+      (err, result) => {
+        clearTimeout(timer);
+        if (err) reject(err);
+        else resolve(result);
+      }
     );
     Readable.from(buffer).pipe(stream);
   });

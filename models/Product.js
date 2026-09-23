@@ -50,6 +50,10 @@ const productSchema = new mongoose.Schema(
 );
 
 productSchema.index({ brand: 1 });
+productSchema.index({ category: 1, createdAt: -1 });         // getProducts by category
+productSchema.index({ inStock: 1, isFeatured: 1, sortOrder: 1 }); // getFeaturedProducts
+productSchema.index({ brand: 1, inStock: 1 });                // brand filter with stock
+productSchema.index({ name: "text", brand: "text" });         // text search (replaces JS full-scan)
 
 productSchema.virtual("discountPercent").get(function () {
   if (this.salePrice != null && this.salePrice !== this.originalPrice) {

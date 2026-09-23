@@ -38,7 +38,7 @@ const companySchema = new mongoose.Schema({
       file: { type: String, default: "" },
     }
   ],
-  maintenanceMode: { type: Boolean, default: false },
+  
 }, { timestamps: true });
 
 module.exports = mongoose.model("Company", companySchema);
