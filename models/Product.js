@@ -9,10 +9,6 @@ const productSchema = new mongoose.Schema(
     description: { type: String },
     image: { type: String },
     images: [{ type: String }],
-    network: { type: String },       // e.g. 4G, 5G
-    simType: { type: String },       // e.g. نانو, مايكرو, eSIM
-    dataSpeed: { type: String },     // e.g. 150 Mbps
-    storage: { type: String },       // للراوترات
     specifications: [
       {
         groupName: String,
