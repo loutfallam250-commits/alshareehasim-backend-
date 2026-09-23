@@ -123,7 +123,15 @@ router.post("/auth/register/request", otpLimiter, async (req, res) => {
 
     const existing = await Customer.findOne({ email: email.toLowerCase().trim() });
     if (existing) {
-      return res.status(409).json({ error: "هذا البريد الإلكتروني مسجل مسبقًا" });
+      if (existing.verified) {
+        return res.status(409).json({ error: "هذا البريد الإلكتروني مسجل مسبقًا" });
+      }
+      
+      // Enforce cooldown for unverified accounts requesting OTP again
+      if (existing.pendingOtp?.cooldownUntil && existing.pendingOtp.cooldownUntil > new Date()) {
+        const seconds = Math.ceil((existing.pendingOtp.cooldownUntil - Date.now()) / 1000);
+        return res.status(429).json({ error: "يرجى الانتظار قبل طلب رمز جديد", cooldown: seconds });
+      }
     }
 
     // Enforce cooldown if a recent OTP was issued via a temp record
