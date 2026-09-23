@@ -25,7 +25,7 @@ if (_rlCleanup.unref) _rlCleanup.unref(); // don't keep process alive
 
 function userRateLimit(req, res, next) {
   const { whatsapp, nationalId } = req.body;
-  const key = whatsapp || nationalId;
+  const key = whatsapp || nationalId || req.ip || req.connection?.remoteAddress || "unknown_ip";
   if (!key) return next();
 
   const now = Date.now();
