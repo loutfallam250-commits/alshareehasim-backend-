@@ -95,7 +95,7 @@ router.get("/auth/check-email", async (req, res) => {
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.json({ exists: false });
     }
-    const exists = await Customer.exists({ email });
+    const exists = await Customer.exists({ email, verified: true });
     res.json({ exists: !!exists });
   } catch {
     res.status(500).json({ error: "خطأ في الخادم" });
@@ -126,9 +126,14 @@ router.post("/auth/register/request", otpLimiter, async (req, res) => {
       if (existing.verified) {
         return res.status(409).json({ error: "هذا البريد الإلكتروني مسجل مسبقًا" });
       }
-      
-      // Enforce cooldown for unverified accounts requesting OTP again
-      if (existing.pendingOtp?.cooldownUntil && existing.pendingOtp.cooldownUntil > new Date()) {
+
+      // If user modified their info (e.g. fixed typo via "تعديل البيانات"), don't block with cooldown
+      const isDataChanged =
+        existing.firstName !== firstName.trim() ||
+        existing.lastName !== lastName.trim() ||
+        existing.phone !== phone.trim();
+
+      if (!isDataChanged && existing.pendingOtp?.cooldownUntil && existing.pendingOtp.cooldownUntil > new Date()) {
         const seconds = Math.ceil((existing.pendingOtp.cooldownUntil - Date.now()) / 1000);
         return res.status(429).json({ error: "يرجى الانتظار قبل طلب رمز جديد", cooldown: seconds });
       }
@@ -183,7 +188,7 @@ router.post("/auth/register/request", otpLimiter, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/auth/register/verify", authLimiter, async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { email, otp, firstName, lastName, phone, password } = req.body;
 
     if (!email || !otp) {
       return res.status(400).json({ error: "البيانات مطلوبة" });
@@ -220,8 +225,14 @@ router.post("/auth/register/verify", authLimiter, async (req, res) => {
       });
     }
 
-    // OTP valid — mark verified and clear OTP bucket
+    // OTP valid — mark verified and clear OTP bucket, apply any updated info
     customer.verified = true;
+    if (firstName && typeof firstName === "string" && firstName.trim().length >= 2) customer.firstName = firstName.trim();
+    if (lastName && typeof lastName === "string" && lastName.trim().length >= 2) customer.lastName = lastName.trim();
+    if (phone && typeof phone === "string" && phone.trim()) customer.phone = phone.trim();
+    if (password && String(password).length >= 6) {
+      customer.password = await bcrypt.hash(password, 12);
+    }
     customer.pendingOtp = { hash: null, expiresAt: null, attempts: 0, cooldownUntil: null };
     await customer.save();
 
