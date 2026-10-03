@@ -1,10 +1,10 @@
 const Product = require("../models/Product");
 const mongoose = require("mongoose");
 
-// ─── In-memory cache — TTL 60s, max 100 entries ──────────────────────────────
+// ─── In-memory cache — TTL 300s (5 mins), max 200 entries ─────────────────────
 const cache = new Map();
-const CACHE_TTL = 60 * 1000;
-const CACHE_MAX_SIZE = 100;
+const CACHE_TTL = 300 * 1000;
+const CACHE_MAX_SIZE = 200;
 
 function getCached(key) {
   const entry = cache.get(key);
