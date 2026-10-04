@@ -1,6 +1,7 @@
+require('dotenv').config();
 const mongoose = require('mongoose');
 
-const MONGO_URI = 'mongodb+srv://bsjd648hdj_db_user:3axQmuieLGFhhi9B@cluster0.egubejh.mongodb.net/lamsa-new-sim?appName=Cluster0';
+const MONGO_URI = process.env.MONGO_URI;
 
 async function main() {
     await mongoose.connect(MONGO_URI);

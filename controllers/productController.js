@@ -82,16 +82,24 @@ exports.getProducts = async (req, res) => {
       return res.json(result);
     }
 
-    // Search: cap at 500 to prevent unbounded memory usage, cache results
-    const normalized = normalizeArabic(q);
-    const cacheKey = `search:${brand || ""}:${category || ""}:${normalized}`;
+    // Search: execute regex directly in DB with Arabic normalization patterns, avoiding loading 500 items into Node memory
+    const escaped = q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const arabicPattern = escaped
+      .replace(/[أإآا]/g, "[أإآا]")
+      .replace(/[ىي]/g, "[ىي]")
+      .replace(/[ةه]/g, "[ةه]");
+    const searchRegex = new RegExp(arabicPattern, "i");
+
+    const cacheKey = `search:${brand || ""}:${category || ""}:${q.trim().toLowerCase()}`;
     const cached = getCached(cacheKey);
     if (cached) return res.json(cached);
 
-    const products = await Product.find(query).sort(sortObj).limit(500).lean();
-    const filtered = products.filter(
-      (p) => p.name && normalizeArabic(p.name).includes(normalized)
-    );
+    const searchQuery = {
+      ...query,
+      $or: [{ name: searchRegex }, { brand: searchRegex }, { brief: searchRegex }],
+    };
+
+    const filtered = await Product.find(searchQuery).sort(sortObj).limit(100).lean();
     setCached(cacheKey, filtered);
     res.json(filtered);
   } catch (err) {

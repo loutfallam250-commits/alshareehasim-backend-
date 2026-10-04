@@ -63,6 +63,6 @@ const checkoutSchema = new mongoose.Schema(
 checkoutSchema.index({ createdAt: -1 });
 checkoutSchema.index({ whatsapp: 1 });
 checkoutSchema.index({ nationalId: 1 });
-checkoutSchema.index({ status: 1 });
+checkoutSchema.index({ status: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Checkout", checkoutSchema);
