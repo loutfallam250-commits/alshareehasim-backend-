@@ -56,8 +56,8 @@ const COMPANY_TEXT_FIELDS = [
   "currencyAr", "currencyEn", "taxNumber",
   "shippingCompany", "paymentMethod", "details",
   "qrLink", "qrLinkType", "qrFile", "qrImage",
-  "link1", "link1Type", "file1", "img1",
-  "link2", "link2Type", "file2", "img2",
+  "number1", "link1", "link1Type", "file1", "img1",
+  "number2", "link2", "link2Type", "file2", "img2",
   "footerItems"
 ];
 
@@ -309,9 +309,9 @@ router.get("/company", authMiddleware, async (req, res) => {
       // First-time init: create with default footerItems then return
       company = (await Company.create({
         footerItems: [
-          { image: "", linkType: "link", link: "", file: "" },
-          { image: "", linkType: "link", link: "", file: "" },
-          { image: "", linkType: "link", link: "", file: "" },
+          { number: "", image: "", linkType: "link", link: "", file: "" },
+          { number: "", image: "", linkType: "link", link: "", file: "" },
+          { number: "", image: "", linkType: "link", link: "", file: "" },
         ],
       })).toObject();
     } else if (!company.footerItems || company.footerItems.length === 0) {
@@ -319,15 +319,15 @@ router.get("/company", authMiddleware, async (req, res) => {
       await Company.updateOne(
         { _id: company._id },
         { $set: { footerItems: [
-          { image: "", linkType: "link", link: "", file: "" },
-          { image: "", linkType: "link", link: "", file: "" },
-          { image: "", linkType: "link", link: "", file: "" },
+          { number: "", image: "", linkType: "link", link: "", file: "" },
+          { number: "", image: "", linkType: "link", link: "", file: "" },
+          { number: "", image: "", linkType: "link", link: "", file: "" },
         ] } }
       );
       company.footerItems = [
-        { image: "", linkType: "link", link: "", file: "" },
-        { image: "", linkType: "link", link: "", file: "" },
-        { image: "", linkType: "link", link: "", file: "" },
+        { number: "", image: "", linkType: "link", link: "", file: "" },
+        { number: "", image: "", linkType: "link", link: "", file: "" },
+        { number: "", image: "", linkType: "link", link: "", file: "" },
       ];
     }
     res.json(company);
@@ -341,7 +341,7 @@ router.get("/company/public", async (req, res) => {
   try {
     const company = await Company.findOne(
       {},
-      "nameAr nameEn phone whatsapp email website details logo qrImage qrLink qrLinkType qrFile img1 link1 link1Type file1 img2 link2 link2Type file2 footerItems -_id"
+      "nameAr nameEn phone whatsapp email website details logo qrImage qrLink qrLinkType qrFile number1 img1 link1 link1Type file1 number2 img2 link2 link2Type file2 footerItems -_id"
     ).lean();
     res.json(company || {});
   } catch {
@@ -1343,7 +1343,7 @@ router.post("/company/footer-items/add", authMiddleware, async (req, res) => {
   try {
     let company = await Company.findOne();
     if (!company) company = await Company.create({});
-    company.footerItems.push({ image: "", linkType: "link", link: "", file: "" });
+    company.footerItems.push({ number: "", image: "", linkType: "link", link: "", file: "" });
     await company.save();
     res.json({ index: company.footerItems.length - 1 });
   } catch {
