@@ -219,13 +219,68 @@ router.post("/", userRateLimit, async (req, res) => {
 router.get("/", adminAuth, async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(100, parseInt(req.query.limit) || 50);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
     const skip = (page - 1) * limit;
+
+    const filter = {};
+
+    if (req.query.status) {
+      filter.status = req.query.status;
+    }
+
+    if (req.query.search && typeof req.query.search === "string") {
+      const trimmed = req.query.search.trim();
+      if (trimmed) {
+        const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const regex = new RegExp(escaped, "i");
+        filter.$or = [
+          { customer: regex },
+          { whatsapp: regex },
+          { nationalId: regex },
+          { orderId: regex },
+        ];
+      }
+    }
+
+    if (req.query.dateFrom || req.query.dateTo) {
+      filter.createdAt = {};
+      if (req.query.dateFrom) {
+        const fromDate = new Date(req.query.dateFrom);
+        if (!isNaN(fromDate.getTime())) {
+          filter.createdAt.$gte = fromDate;
+        }
+      }
+      if (req.query.dateTo) {
+        const toDate = new Date(req.query.dateTo);
+        if (!isNaN(toDate.getTime())) {
+          toDate.setHours(23, 59, 59, 999);
+          filter.createdAt.$lte = toDate;
+        }
+      }
+      if (Object.keys(filter.createdAt).length === 0) {
+        delete filter.createdAt;
+      }
+    }
+
+    const allowedSortFields = ["createdAt", "total", "status", "customer", "orderId"];
+    const sortField = allowedSortFields.includes(req.query.sortField) ? req.query.sortField : "createdAt";
+    const sortDir = req.query.sortDir === "asc" ? 1 : -1;
+
     const [orders, total] = await Promise.all([
-      Checkout.find().sort({ createdAt: -1 }).skip(skip).limit(limit),
-      Checkout.countDocuments(),
+      Checkout.find(filter).sort({ [sortField]: sortDir }).skip(skip).limit(limit),
+      Checkout.countDocuments(filter),
     ]);
-    res.json({ orders, total, page, pages: Math.ceil(total / limit) });
+
+    const totalPages = Math.ceil(total / limit) || 1;
+
+    res.json({
+      orders,
+      total,
+      page,
+      limit,
+      pages: totalPages,
+      totalPages: totalPages,
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
