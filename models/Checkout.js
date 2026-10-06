@@ -42,7 +42,14 @@ const checkoutSchema = new mongoose.Schema(
     installmentType: { type: String, enum: ["installment", "full"], default: "full" },
     months: { type: Number, default: 0 },
     monthlyPayment: { type: Number, default: 0 },
-    status: { type: String, enum: ["pending", "confirmed", "cancelled"], default: "pending" },
+    status: {
+      type: String,
+      enum: ["pending", "confirmed", "processing", "ready_to_ship", "shipped", "out_for_delivery", "delivered", "cancelled"],
+      default: "pending",
+    },
+    clientIp: { type: String, default: null },
+    guestId: { type: String, default: null },
+    isClaimed: { type: Boolean, default: false },
     shipping: {
       companyId: { type: String },
       companyName: { type: String },
@@ -63,6 +70,8 @@ const checkoutSchema = new mongoose.Schema(
 checkoutSchema.index({ createdAt: -1 });
 checkoutSchema.index({ whatsapp: 1 });
 checkoutSchema.index({ nationalId: 1 });
+checkoutSchema.index({ clientIp: 1, createdAt: -1 });
+checkoutSchema.index({ guestId: 1, createdAt: -1 });
 checkoutSchema.index({ status: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Checkout", checkoutSchema);

@@ -510,22 +510,140 @@ router.post("/auth/forgot/verify", authLimiter, async (req, res) => {
 });
 
 
-// ?????????????????????????????????????????????????????????????????????????????
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/customers/orders
-// Returns orders for the authenticated customer
-// ?????????????????????????????????????????????????????????????????????????????
-router.get("/orders", requireCustomer, async (req, res) => {
+// Returns orders for authenticated customers OR guest visitors (by guestId, IP, orderIds)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/orders", async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, parseInt(req.query.limit) || 10);
     const skip = (page - 1) * limit;
-    const customerId = req.customer.id;
     const Checkout = require("../models/Checkout");
+
+    // Check if authenticated
+    const token = req.cookies?.[COOKIE_NAME];
+    let customerId = null;
+    let customerPhone = null;
+
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        customerId = decoded.id;
+        const cust = await Customer.findById(customerId).select("phone").lean();
+        if (cust) customerPhone = cust.phone;
+      } catch {
+        // invalid token - proceed as guest
+      }
+    }
+
+    let filter = {};
+
+    if (customerId) {
+      // Authenticated customer: search by userId or customer's phone
+      const conditions = [{ userId: customerId }];
+      if (customerPhone) conditions.push({ whatsapp: customerPhone });
+      filter = { $or: conditions };
+    } else {
+      // Guest visitor: search by guestId, client IP, or explicit orderIds
+      const clientIp = req.headers["x-client-ip"] || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || "";
+      const guestId = req.headers["x-guest-id"] || req.query.guestId;
+      const orderIds = req.query.orderIds ? String(req.query.orderIds).split(",").map(s => s.trim()).filter(Boolean) : [];
+      const phone = req.query.phone ? String(req.query.phone).trim() : "";
+
+      const guestOr = [];
+      if (orderIds.length > 0) {
+        guestOr.push({ orderId: { $in: orderIds } });
+        const validObjIds = orderIds.filter(id => /^[a-f\d]{24}$/i.test(id));
+        if (validObjIds.length > 0) guestOr.push({ _id: { $in: validObjIds } });
+      }
+      if (guestId && String(guestId).trim()) {
+        guestOr.push({ guestId: String(guestId).trim() });
+      }
+      if (phone) {
+        guestOr.push({ whatsapp: phone });
+      }
+      if (clientIp && clientIp !== "127.0.0.1" && clientIp !== "::1" && clientIp !== "unknown_ip") {
+        guestOr.push({ clientIp });
+      }
+
+      if (guestOr.length === 0) {
+        return res.json({ orders: [], total: 0, page: 1, pages: 1 });
+      }
+      filter = { $or: guestOr };
+    }
+
     const [orders, total] = await Promise.all([
-      Checkout.find({ userId: customerId }).sort({ createdAt: -1 }).skip(skip).limit(limit),
-      Checkout.countDocuments({ userId: customerId }),
+      Checkout.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Checkout.countDocuments(filter),
     ]);
-    res.json({ orders, total, page, pages: Math.ceil(total / limit) });
+
+    res.json({ orders, total, page, pages: Math.ceil(total / limit) || 1 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/customers/orders/:id
+// Returns single order details for customer/guest tracking
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const Checkout = require("../models/Checkout");
+    const isObjectId = /^[a-f\d]{24}$/i.test(id);
+    const filter = isObjectId ? { $or: [{ _id: id }, { orderId: id }] } : { orderId: id };
+
+    const order = await Checkout.findOne(filter).lean();
+    if (!order) {
+      return res.status(404).json({ error: "الطلب غير موجود" });
+    }
+
+    res.json({ order });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/customers/orders/claim
+// Claims guest orders and assigns them to the logged-in customer
+// ─────────────────────────────────────────────────────────────────────────────
+router.post("/orders/claim", requireCustomer, async (req, res) => {
+  try {
+    const Checkout = require("../models/Checkout");
+    const customer = await Customer.findById(req.customer.id).lean();
+    if (!customer) return res.status(404).json({ error: "العميل غير موجود" });
+
+    const clientIp = req.headers["x-client-ip"] || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || "";
+    const guestId = req.headers["x-guest-id"] || req.body?.guestId;
+    const orderIds = Array.isArray(req.body?.orderIds) ? req.body.orderIds : [];
+
+    const claimConditions = [];
+    if (customer.phone) claimConditions.push({ whatsapp: customer.phone });
+    if (customer.email) claimConditions.push({ customerEmail: customer.email });
+    if (guestId) claimConditions.push({ guestId });
+    if (orderIds.length > 0) claimConditions.push({ orderId: { $in: orderIds } });
+    if (clientIp && clientIp !== "127.0.0.1" && clientIp !== "::1") {
+      claimConditions.push({ clientIp });
+    }
+
+    if (claimConditions.length === 0) {
+      return res.json({ success: true, claimed: 0 });
+    }
+
+    const updateRes = await Checkout.updateMany(
+      {
+        userId: { $in: [null, "", undefined] },
+        $or: claimConditions,
+      },
+      {
+        $set: { userId: String(customer._id), isClaimed: true },
+      }
+    );
+
+    res.json({ success: true, claimed: updateRes.modifiedCount || 0 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

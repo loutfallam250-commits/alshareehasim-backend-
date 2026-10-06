@@ -204,7 +204,34 @@ router.post("/", userRateLimit, async (req, res) => {
       productId, name, price, quantity,
     }));
 
-    const payload = { ...req.body, items: dbItems, total: calculatedTotal };
+    const clientIp = req.headers['x-client-ip'] || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || req.connection?.remoteAddress || null;
+    const guestId = req.headers['x-guest-id'] || req.body.guestId || null;
+
+    // ─── Deduplication within 1 hour ──────────────────────────────────────────
+    // If the same customer places the same order within 1 hour, cancel previous pending order
+    // and adopt the latest one as the active one.
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const dupConditions = [];
+    if (whatsapp && String(whatsapp).trim()) dupConditions.push({ whatsapp: String(whatsapp).trim() });
+    if (guestId && String(guestId).trim()) dupConditions.push({ guestId: String(guestId).trim() });
+    if (clientIp && clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== 'unknown_ip') {
+      dupConditions.push({ clientIp });
+    }
+
+    if (dupConditions.length > 0) {
+      await Checkout.updateMany(
+        {
+          createdAt: { $gte: oneHourAgo },
+          status: 'pending',
+          $or: dupConditions,
+        },
+        {
+          $set: { status: 'cancelled' },
+        }
+      );
+    }
+
+    const payload = { ...req.body, items: dbItems, total: calculatedTotal, clientIp, guestId };
     if (shippingSnapshot) payload.shipping = shippingSnapshot;
 
     const checkout = new Checkout(payload);
