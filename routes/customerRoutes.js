@@ -222,6 +222,7 @@ router.post("/auth/register/verify", authLimiter, async (req, res) => {
       return res.status(400).json({
         error: remaining > 0 ? `رمز التحقق غير صحيح، تبقى ${remaining} محاولات` : "رمز التحقق غير صحيح",
         code: newAttempts >= OTP_MAX_ATTEMPTS ? "MAX_ATTEMPTS" : "WRONG_OTP",
+        ...(newAttempts >= OTP_MAX_ATTEMPTS ? { cooldown: 300 } : {}),
       });
     }
 
@@ -231,7 +232,7 @@ router.post("/auth/register/verify", authLimiter, async (req, res) => {
     if (lastName && typeof lastName === "string" && lastName.trim().length >= 2) customer.lastName = lastName.trim();
     if (phone && typeof phone === "string" && phone.trim()) customer.phone = phone.trim();
     if (password && String(password).length >= 6) {
-      customer.password = await bcrypt.hash(password, 12);
+      customer.password = password; // The model save hook hashes exactly once.
     }
     customer.pendingOtp = { hash: null, expiresAt: null, attempts: 0, cooldownUntil: null };
     await customer.save();
@@ -306,7 +307,11 @@ router.post("/auth/verify", authLimiter, async (req, res) => {
       return res.status(400).json({ error: "لا يوجد طلب OTP لهذا البريد", code: "NO_PENDING" });
     }
 
-    const { hash, expiresAt, attempts } = customer.pendingOtp;
+    const { hash, expiresAt, attempts, cooldownUntil } = customer.pendingOtp;
+    if ((attempts || 0) >= OTP_MAX_ATTEMPTS) {
+      const cooldown = Math.max(0, Math.ceil((new Date(cooldownUntil || 0).getTime() - Date.now()) / 1000));
+      return res.status(429).json({ error: "تم تجاوز عدد المحاولات. اطلب رمزًا جديدًا بعد انتهاء الانتظار", code: "MAX_ATTEMPTS", cooldown });
+    }
 
     if (!expiresAt || expiresAt < new Date()) {
       return res.status(400).json({ error: "انتهت صلاحية رمز التحقق", code: "EXPIRED" });
@@ -324,6 +329,7 @@ router.post("/auth/verify", authLimiter, async (req, res) => {
       return res.status(400).json({
         error: remaining > 0 ? `رمز التحقق غير صحيح، تبقى ${remaining} محاولات` : "رمز التحقق غير صحيح",
         code: newAttempts >= OTP_MAX_ATTEMPTS ? "MAX_ATTEMPTS" : "WRONG_OTP",
+        ...(newAttempts >= OTP_MAX_ATTEMPTS ? { cooldown: 300 } : {}),
       });
     }
 
@@ -476,7 +482,11 @@ router.post("/auth/forgot/verify", authLimiter, async (req, res) => {
       return res.status(400).json({ error: "لا يوجد طلب إعادة تعيين لهذا البريد", code: "NO_PENDING" });
     }
 
-    const { hash, expiresAt, attempts } = customer.pendingOtp;
+    const { hash, expiresAt, attempts, cooldownUntil } = customer.pendingOtp;
+    if ((attempts || 0) >= OTP_MAX_ATTEMPTS) {
+      const cooldown = Math.max(0, Math.ceil((new Date(cooldownUntil || 0).getTime() - Date.now()) / 1000));
+      return res.status(429).json({ error: "تم تجاوز عدد المحاولات. اطلب رمزًا جديدًا بعد انتهاء الانتظار", code: "MAX_ATTEMPTS", cooldown });
+    }
 
     if (!expiresAt || expiresAt < new Date()) {
       return res.status(400).json({ error: "انتهت صلاحية رمز التحقق", code: "EXPIRED" });
@@ -494,6 +504,7 @@ router.post("/auth/forgot/verify", authLimiter, async (req, res) => {
       return res.status(400).json({
         error: remaining > 0 ? `رمز التحقق غير صحيح، تبقى ${remaining} محاولات` : "رمز التحقق غير صحيح",
         code: newAttempts >= OTP_MAX_ATTEMPTS ? "MAX_ATTEMPTS" : "WRONG_OTP",
+        ...(newAttempts >= OTP_MAX_ATTEMPTS ? { cooldown: 300 } : {}),
       });
     }
 
